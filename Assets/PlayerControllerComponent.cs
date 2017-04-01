@@ -6,14 +6,22 @@ using Utils;
 
 public class PlayerControllerComponent : MonoBehaviour {
 
+    public float debrisDensity = 1.0f;
     public float minPolygonArea = 0.025f;
     public float moveForce = 1.0f;
     public float jumpForce = 800.0f;
     private Rigidbody2D rb;
     public Camera camera;
+    public Animator spriteAnimator;
+    public SpriteRenderer spriteRenderer;
+    public Transform reticalTransform;
+
+    private bool falling = false;
+    private bool flipSprite = false;
 
     private LayerMask environmentLayer;
     private LayerMask environmentPolygonLayer;
+    private LayerMask debrisLayer;
 
     private Vector2 cutStart;
 
@@ -22,6 +30,7 @@ public class PlayerControllerComponent : MonoBehaviour {
         rb = gameObject.GetComponent<Rigidbody2D>();
         environmentLayer = LayerMask.NameToLayer("environment");
         environmentPolygonLayer = LayerMask.NameToLayer("environmentPolygon");
+        debrisLayer = LayerMask.NameToLayer("debris");
     }
 	
 	// Update is called once per frame
@@ -34,6 +43,7 @@ public class PlayerControllerComponent : MonoBehaviour {
             if (!Input.GetKey(KeyCode.A))
             {
                 force += Vector2.right;
+                spriteRenderer.flipX = false;
             }
         }
         else
@@ -41,34 +51,52 @@ public class PlayerControllerComponent : MonoBehaviour {
             if (Input.GetKey(KeyCode.A))
             {
                 force += Vector2.left;
+                spriteRenderer.flipX = true;
             }
         }
 
         force = force.normalized;
         force *= moveForce;
 
+        bool onFloor = Physics2D.OverlapCircle((Vector2)transform.position + (Vector2.down * 0.2f), 0.7f, (1 << environmentLayer) | (1 << environmentPolygonLayer)) != null;
+
         if (Input.GetKeyDown(KeyCode.Space))
         {
-            Collider2D floor = Physics2D.OverlapCircle((Vector2)transform.position + (Vector2.down * 0.2f), 0.7f, 1 << environmentLayer);
-            if(floor != null)
+            spriteAnimator.SetTrigger("Jump");
+            if(onFloor)
             {
+                falling = true;
                 force += Vector2.up * jumpForce;
             }
+        }
+
+        if (falling && onFloor)
+        {
+            spriteAnimator.SetTrigger("Landed");
+            falling = false;
         }
 
 
         rb.AddForce(force);
 
-        if(Input.GetMouseButtonDown(0))
+        Vector3 mousePositionWorld = camera.ScreenToWorldPoint(Input.mousePosition);
+
+        Vector2 vector = mousePositionWorld - transform.position;
+        float vectorMag = vector.magnitude;
+        float angle = Mathf.Acos(Vector2.Dot(vector * (1.0f / vectorMag), Vector2.right));
+        if (vector.y < 0.0f)
+            angle *= -1.0f;
+
+        reticalTransform.rotation = Quaternion.Euler(0.0f, 0.0f, angle * Mathf.Rad2Deg);
+        reticalTransform.position = transform.position;
+
+        if (Input.GetMouseButtonDown(0))
         {
             cutStart = camera.ScreenToWorldPoint(Input.mousePosition);
-        } else if (Input.GetMouseButtonUp(0))
-        {
-            Vector2 cutEnd = camera.ScreenToWorldPoint(Input.mousePosition);
-
-            CutThroughSpace(cutStart, cutEnd);
+            CutThroughSpace(transform.position, mousePositionWorld, 2f);
         }
 
+        camera.transform.position = new Vector3(transform.position.x, transform.position.y, -10.0f);
     }
 
     private Vector2 LineIntersectionPoint(Vector2 ps1, Vector2 pe1, Vector2 ps2, Vector2 pe2)
@@ -93,6 +121,11 @@ public class PlayerControllerComponent : MonoBehaviour {
             (B2 * C1 - B1 * C2) / delta,
             (A1 * C2 - A2 * C1) / delta
         );
+    }
+
+    private Vector2 Right(Vector2 vector)
+    {
+        return new Vector2(vector.y, -vector.x);
     }
 
     private bool RightOf(Vector2 rayOrigin, Vector2 rayDirection, Vector2 point)
@@ -166,36 +199,12 @@ public class PlayerControllerComponent : MonoBehaviour {
         return output;
     }
 
-    private Mesh GenerateMeshForPolygon(Vector2[] polygon)
+    private void SplitEnvironmentPolygon(Ray2D ray, float radius, GameObject go)
     {
-        Mesh output = new Mesh();
-
-        //create triangle fan
-        Vector3[] vertices = new Vector3[polygon.Length];
-        for (int i = 0; i < polygon.Length; i++)
-        {
-            vertices[i] = polygon[i];
-        }
+        Vector2 right = Right(ray.direction);
         
-        int[] triangles = new int[(polygon.Length - 2) * 3];
-        int indexIndex = 0;
-        for (int i = 0; i < polygon.Length - 2; i++)
-        {
-            triangles[indexIndex++] = 0;
-            triangles[indexIndex++] = i + 2;
-            triangles[indexIndex++] = i + 1;
-        }
-
-        output.vertices = vertices;
-        output.uv = polygon;
-        output.triangles = triangles;
-
-        return output;
-    }
-
-    private void SplitEnvironmentPolygon(Ray2D ray, GameObject go)
-    {
-        Ray2D minusRay = new Ray2D(ray.origin, -ray.direction);
+        Ray2D leftRay = new Ray2D(ray.origin - (right * radius), ray.direction);
+        Ray2D rightRay = new Ray2D(ray.origin + (right * radius), -ray.direction);
 
         PolygonCollider2D collider = go.GetComponent<PolygonCollider2D>();
 
@@ -211,16 +220,22 @@ public class PlayerControllerComponent : MonoBehaviour {
         Vector3 spawnPosition = collider.transform.position;
         Quaternion spawnRotation = collider.transform.rotation;
         Material material = go.GetComponent<MeshRenderer>().material;
+        Rigidbody2D rb = go.GetComponent<Rigidbody2D>();
+        float originalMass = 1.0f;
+        if (rb != null)
+        {
+            originalMass = go.GetComponent<Rigidbody2D>().mass;
+        }
 
         DestroyImmediate(collider.gameObject);
 
-        Vector2[] leftPoints = ClipPolygon(ray.origin, ray.direction, worldPoints);
+        Vector2[] leftPoints = ClipPolygon(leftRay.origin, leftRay.direction, worldPoints);
         for (int j = 0; j < leftPoints.Length; j++)
         {
             leftPoints[j] = invPointTransform.MultiplyPoint(leftPoints[j]);
         }
         float leftArea = PolygonArea(leftPoints);
-        Vector2[] rightPoints = ClipPolygon(minusRay.origin, minusRay.direction, worldPoints);
+        Vector2[] rightPoints = ClipPolygon(rightRay.origin, rightRay.direction, worldPoints);
         for (int j = 0; j < rightPoints.Length; j++)
         {
             rightPoints[j] = invPointTransform.MultiplyPoint(rightPoints[j]);
@@ -229,8 +244,8 @@ public class PlayerControllerComponent : MonoBehaviour {
 
         float totalArea = rightArea + leftArea;
 
-        float leftMass = leftArea / totalArea;
-        float rightMass = rightArea / totalArea;
+        float leftMass = originalMass * leftArea / totalArea;
+        float rightMass = originalMass * rightArea / totalArea;
 
         if (leftPoints.Length > 2 && (leftArea > minPolygonArea))
         {
@@ -239,10 +254,14 @@ public class PlayerControllerComponent : MonoBehaviour {
             leftGO.transform.rotation = spawnRotation;
             PolygonCollider2D leftPC = leftGO.AddComponent<PolygonCollider2D>();
             leftPC.points = leftPoints;
-            leftGO.AddComponent<Rigidbody2D>();
             leftGO.layer = environmentPolygonLayer;
-            leftGO.AddComponent<MeshFilter>().mesh = GenerateMeshForPolygon(leftPoints);
+            leftGO.AddComponent<MeshFilter>().mesh = Utility.GenerateMeshForPolygon(leftPoints);
             leftGO.AddComponent<MeshRenderer>().material = material;
+            if(rb != null)
+            {
+                Rigidbody2D leftRB = leftGO.AddComponent<Rigidbody2D>();
+                leftRB.mass = leftMass;
+            }
         }
 
         if (rightPoints.Length > 2 && (rightArea > minPolygonArea))
@@ -252,24 +271,53 @@ public class PlayerControllerComponent : MonoBehaviour {
             rightGO.transform.rotation = spawnRotation;
             PolygonCollider2D rightPC = rightGO.AddComponent<PolygonCollider2D>();
             rightPC.points = rightPoints;
-            rightGO.AddComponent<Rigidbody2D>();
             rightGO.layer = environmentPolygonLayer;
-            rightGO.AddComponent<MeshFilter>().mesh = GenerateMeshForPolygon(rightPoints);
+            rightGO.AddComponent<MeshFilter>().mesh = Utility.GenerateMeshForPolygon(rightPoints);
             rightGO.AddComponent<MeshRenderer>().material = material;
+            if (rb != null)
+            {
+                Rigidbody2D rightRB = rightGO.AddComponent<Rigidbody2D>();
+                rightRB.mass = rightMass;
+            }
         }
     }
 
-    private void CutThroughSpace(Vector2 start, Vector2 end)
+    private void CutThroughSpace(Vector2 start, Vector2 end, float radius)
     {
-        RaycastHit2D[] hits = Physics2D.LinecastAll(start, end, 1 << environmentPolygonLayer);
-
         Ray2D ray = new Ray2D(start, end - start);
 
-        for (int i = 0; i < hits.Length; i++)
-        {
-            PolygonCollider2D collider = (PolygonCollider2D)hits[i].collider;
+        //Vector2 vector = end - start;
+        //Vector2 middle = (start + end) * 0.5f;
+        //float vectorMag = vector.magnitude;
+        //float angle = Mathf.Acos(Vector2.Dot(vector * (1.0f / vectorMag), Vector2.right));
 
-            SplitEnvironmentPolygon(ray, collider.gameObject);
+        //if (vector.y < 0.0f)
+        //    angle *= -1.0f;
+
+
+        //Collider2D[] colliders = Physics2D.OverlapCapsuleAll(middle, new Vector2(radius * 2.0f, vectorMag), CapsuleDirection2D.Vertical, angle, 1 << environmentPolygonLayer);
+        
+        //for (int i = 0; i < colliders.Length; i++)
+        //{
+        //    PolygonCollider2D collider = (PolygonCollider2D)colliders[i];
+        //    SplitEnvironmentPolygon(ray, radius, collider.gameObject);
+        //}
+
+        RaycastHit2D hit = Physics2D.Linecast(start, end, 1 << environmentPolygonLayer);
+        if (hit != null)
+        {
+            try
+            {
+                PolygonCollider2D collider = (PolygonCollider2D)hit.collider;
+                SplitEnvironmentPolygon(ray, radius, collider.gameObject);
+            }
+            catch (System.Exception)
+            {
+
+                throw;
+            }
         }
     }
+
+    
 }
