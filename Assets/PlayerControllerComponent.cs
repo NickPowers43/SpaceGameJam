@@ -6,6 +6,7 @@ using Utils;
 
 public class PlayerControllerComponent : MonoBehaviour {
 
+    public float minPolygonArea = 0.025f;
     public float moveForce = 1.0f;
     public float jumpForce = 800.0f;
     private Rigidbody2D rb;
@@ -70,7 +71,7 @@ public class PlayerControllerComponent : MonoBehaviour {
 
     }
 
-    Vector2 LineIntersectionPoint(Vector2 ps1, Vector2 pe1, Vector2 ps2, Vector2 pe2)
+    private Vector2 LineIntersectionPoint(Vector2 ps1, Vector2 pe1, Vector2 ps2, Vector2 pe2)
     {
         // Get A,B,C of first line - points : ps1 to pe1
         float A1 = pe1.y - ps1.y;
@@ -94,12 +95,12 @@ public class PlayerControllerComponent : MonoBehaviour {
         );
     }
 
-    bool RightOf(Vector2 rayOrigin, Vector2 rayDirection, Vector2 point)
+    private bool RightOf(Vector2 rayOrigin, Vector2 rayDirection, Vector2 point)
     {
         return Vector2.Dot(point - rayOrigin, new Vector2(rayDirection.y, -rayDirection.x)) > 0.0f;
     }
 
-    Vector2[] clipPolygon(Vector2 clipOrigin, Vector2 clipDirection, Vector2[] subject)
+    Vector2[] ClipPolygon(Vector2 clipOrigin, Vector2 clipDirection, Vector2[] subject)
     {
         List<Vector2> output = new List<Vector2>();
 
@@ -134,6 +135,35 @@ public class PlayerControllerComponent : MonoBehaviour {
         }
 
         return output.ToArray();
+    }
+
+    float Cross2D(Vector2 a, Vector2 b)
+    {
+        return a.x * b.y - a.y * b.x;
+    }
+
+    private float PolygonArea(Vector2[] points)
+    {
+        if (points.Length < 3)
+        {
+            return 0.0f;
+        }
+
+        float output = 0.0f;
+
+        Vector2 a = points[0];
+
+        Vector2 prevEdgeVector = points[1] - a;
+        for (int i = 2; i < points.Length; i++)
+        {
+            Vector2 currEdgeVector = points[i] - a;
+
+            output += Cross2D(prevEdgeVector, currEdgeVector);
+
+            prevEdgeVector = currEdgeVector;
+        }
+
+        return output;
     }
 
     private Mesh GenerateMeshForPolygon(Vector2[] polygon)
@@ -178,43 +208,55 @@ public class PlayerControllerComponent : MonoBehaviour {
             worldPoints[j] = pointTransform.MultiplyPoint(points[j]);
         }
 
-
-        Vector2[] leftPoints = clipPolygon(ray.origin, ray.direction, worldPoints);
-        for (int j = 0; j < leftPoints.Length; j++)
-        {
-            leftPoints[j] = invPointTransform.MultiplyPoint(leftPoints[j]);
-        }
-        Vector2[] rightPoints = clipPolygon(minusRay.origin, minusRay.direction, worldPoints);
-        for (int j = 0; j < rightPoints.Length; j++)
-        {
-            rightPoints[j] = invPointTransform.MultiplyPoint(rightPoints[j]);
-        }
-
         Vector3 spawnPosition = collider.transform.position;
         Quaternion spawnRotation = collider.transform.rotation;
         Material material = go.GetComponent<MeshRenderer>().material;
 
         DestroyImmediate(collider.gameObject);
 
-        GameObject leftGO = new GameObject();
-        leftGO.transform.position = spawnPosition;
-        leftGO.transform.rotation = spawnRotation;
-        PolygonCollider2D leftPC = leftGO.AddComponent<PolygonCollider2D>();
-        leftPC.points = leftPoints;
-        leftGO.AddComponent<Rigidbody2D>();
-        leftGO.layer = environmentPolygonLayer;
-        leftGO.AddComponent<MeshFilter>().mesh = GenerateMeshForPolygon(leftPoints);
-        leftGO.AddComponent<MeshRenderer>().material = material;
+        Vector2[] leftPoints = ClipPolygon(ray.origin, ray.direction, worldPoints);
+        for (int j = 0; j < leftPoints.Length; j++)
+        {
+            leftPoints[j] = invPointTransform.MultiplyPoint(leftPoints[j]);
+        }
+        float leftArea = PolygonArea(leftPoints);
+        Vector2[] rightPoints = ClipPolygon(minusRay.origin, minusRay.direction, worldPoints);
+        for (int j = 0; j < rightPoints.Length; j++)
+        {
+            rightPoints[j] = invPointTransform.MultiplyPoint(rightPoints[j]);
+        }
+        float rightArea = PolygonArea(rightPoints);
 
-        GameObject rightGO = new GameObject();
-        rightGO.transform.position = spawnPosition;
-        rightGO.transform.rotation = spawnRotation;
-        PolygonCollider2D rightPC = rightGO.AddComponent<PolygonCollider2D>();
-        rightPC.points = rightPoints;
-        rightGO.AddComponent<Rigidbody2D>();
-        rightGO.layer = environmentPolygonLayer;
-        rightGO.AddComponent<MeshFilter>().mesh = GenerateMeshForPolygon(rightPoints);
-        rightGO.AddComponent<MeshRenderer>().material = material;
+        float totalArea = rightArea + leftArea;
+
+        float leftMass = leftArea / totalArea;
+        float rightMass = rightArea / totalArea;
+
+        if (leftPoints.Length > 2 && (leftArea > minPolygonArea))
+        {
+            GameObject leftGO = new GameObject();
+            leftGO.transform.position = spawnPosition;
+            leftGO.transform.rotation = spawnRotation;
+            PolygonCollider2D leftPC = leftGO.AddComponent<PolygonCollider2D>();
+            leftPC.points = leftPoints;
+            leftGO.AddComponent<Rigidbody2D>();
+            leftGO.layer = environmentPolygonLayer;
+            leftGO.AddComponent<MeshFilter>().mesh = GenerateMeshForPolygon(leftPoints);
+            leftGO.AddComponent<MeshRenderer>().material = material;
+        }
+
+        if (rightPoints.Length > 2 && (rightArea > minPolygonArea))
+        {
+            GameObject rightGO = new GameObject();
+            rightGO.transform.position = spawnPosition;
+            rightGO.transform.rotation = spawnRotation;
+            PolygonCollider2D rightPC = rightGO.AddComponent<PolygonCollider2D>();
+            rightPC.points = rightPoints;
+            rightGO.AddComponent<Rigidbody2D>();
+            rightGO.layer = environmentPolygonLayer;
+            rightGO.AddComponent<MeshFilter>().mesh = GenerateMeshForPolygon(rightPoints);
+            rightGO.AddComponent<MeshRenderer>().material = material;
+        }
     }
 
     private void CutThroughSpace(Vector2 start, Vector2 end)
